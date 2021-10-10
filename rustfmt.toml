@@ -1,0 +1,8 @@
+max_width = 80
+edition = "2021"
+
+# We manually wrap comments, to make sure breaks aren't inserted where they
+# change the meaning of markup.
+#
+# wrap_coments = true 
+# comment_width = 80

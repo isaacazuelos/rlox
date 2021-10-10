@@ -1,0 +1,17 @@
+[package]
+name = "rlox"
+version = "0.1.0"
+edition = "2018"
+
+[[bin]]
+name = "rlox"
+path = "src/main.rs"
+
+[features]
+debug_all = []
+
+debug_trace = []
+debug_stress_gc = []
+debug_log_gc = []
+
+[dependencies]
