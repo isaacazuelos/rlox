@@ -1,8 +1,9 @@
 use std::fmt::{self, Display, Formatter};
 
 use crate::{
-    closure::ObjClosure, function::ObjFunction, native::ObjNative,
-    string::ObjString, upvalue::ObjUpvalue,
+    class::ObjClass, closure::ObjClosure, function::ObjFunction,
+    instance::ObjInstance, native::ObjNative, string::ObjString,
+    upvalue::ObjUpvalue,
 };
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -12,6 +13,8 @@ pub enum ObjType {
     Native,
     Closure,
     Upvalue,
+    Class,
+    Instance,
 }
 
 #[derive(Debug)]
@@ -58,6 +61,14 @@ impl Obj {
                 let upvalue = object as *mut ObjUpvalue;
                 drop(Box::from_raw(upvalue))
             }
+            ObjType::Class => {
+                let class = object as *mut ObjClass;
+                drop(Box::from_raw(class))
+            }
+            ObjType::Instance => {
+                let instance = object as *mut ObjInstance;
+                drop(Box::from_raw(instance))
+            }
         }
     }
 
@@ -99,6 +110,17 @@ impl Display for Obj {
                 let outer: &ObjUpvalue = std::mem::transmute(self);
                 write!(f, "<upvalue {:?}>", outer)
             },
+            ObjType::Class => unsafe {
+                let outer: &ObjClass = std::mem::transmute(self);
+                let name = outer.name.as_ref().unwrap().as_str();
+                write!(f, "{}", name)
+            },
+            ObjType::Instance => unsafe {
+                let outer: &ObjInstance = std::mem::transmute(self);
+                let class = outer.class.as_ref().unwrap();
+                let name = class.name.as_ref().unwrap().as_str();
+                write!(f, "{} instance", name)
+            },
         }
     }
 }
@@ -114,14 +136,16 @@ impl PartialEq for Obj {
                 let r: &ObjString = std::mem::transmute(other);
                 l == r
             },
-            ObjType::Closure | ObjType::Function | ObjType::Native => {
-                std::ptr::eq(self, other)
-            }
             ObjType::Upvalue => unsafe {
                 let l: &ObjUpvalue = std::mem::transmute(self);
                 let r: &ObjUpvalue = std::mem::transmute(other);
                 l.get() == r.get()
             },
+            ObjType::Closure
+            | ObjType::Function
+            | ObjType::Instance // good enough for now, I think.
+            | ObjType::Native
+            | ObjType::Class => std::ptr::eq(self, other),
         }
     }
 }

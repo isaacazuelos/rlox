@@ -35,6 +35,9 @@ pub enum Opcode {
     GetUpvalue,
     SetUpvalue,
     CloseUpvalue,
+    Class,
+    GetProperty,
+    SetProperty,
 }
 
 impl Opcode {
@@ -69,6 +72,9 @@ impl Opcode {
             Opcode::GetUpvalue => "GetUpvalue",
             Opcode::SetUpvalue => "SetUpvalue",
             Opcode::CloseUpvalue => "CloseUpvalue",
+            Opcode::Class => "Class",
+            Opcode::GetProperty => "GetProperty",
+            Opcode::SetProperty => "SetProperty",
         }
     }
 }
@@ -113,6 +119,9 @@ impl TryFrom<u8> for Opcode {
             26 => Ok(Opcode::GetUpvalue),
             27 => Ok(Opcode::SetUpvalue),
             28 => Ok(Opcode::CloseUpvalue),
+            29 => Ok(Opcode::Class),
+            30 => Ok(Opcode::GetProperty),
+            31 => Ok(Opcode::SetProperty),
             n => Err(n),
         }
     }
@@ -174,7 +183,8 @@ impl Chunk {
                 (Opcode::Constant
                 | Opcode::DefineGlobal
                 | Opcode::GetGlobal
-                | Opcode::SetGlobal),
+                | Opcode::SetGlobal
+                | Opcode::Class),
             ) => self.constant_instruction(op, offset),
             Ok(
                 op

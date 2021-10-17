@@ -8,11 +8,13 @@ use std::{
 
 use crate::{
     chunk::{Chunk, Opcode},
+    class::ObjClass,
     closure::ObjClosure,
     compiler::compile,
     function::ObjFunction,
+    instance::ObjInstance,
     native::{native_clock, NativeFn, ObjNative},
-    object::{Obj, Object},
+    object::{Obj, ObjType, Object},
     string::ObjString,
     table::Table,
     upvalue::{ObjUpvalue, State},
@@ -332,6 +334,44 @@ impl VM {
                     };
                 }
 
+                Opcode::GetProperty => {
+                    if let Some(instance) =
+                        self.peek(0).as_a_mut::<ObjInstance>()
+                    {
+                        let name = self.read_string();
+
+                        if let Some(value) = instance.fields.get(name) {
+                            self.pop(); // instance;
+                            self.push(value);
+                        } else {
+                            self.runtime_error(format!(
+                                "Undefined property '{}'.",
+                                unsafe { name.as_ref().unwrap().as_str() },
+                            ));
+                            return Err(InterpretError::Runtime);
+                        }
+                    } else {
+                        self.runtime_error("Only instances have properties.");
+                        return Err(InterpretError::Runtime);
+                    }
+                }
+
+                Opcode::SetProperty => {
+                    if let Some(instance) =
+                        self.peek(1).as_a_mut::<ObjInstance>()
+                    {
+                        let name = self.read_string();
+                        let value = self.peek(0);
+                        instance.fields.set(name, value);
+                        self.pop();
+                        self.pop();
+                        self.push(value);
+                    } else {
+                        self.runtime_error("Only instances have fields.");
+                        return Err(InterpretError::Runtime);
+                    }
+                }
+
                 Opcode::JumpIfFalse => {
                     let offset = self.read_u16() as usize;
                     if self.peek(0).is_falsey() {
@@ -390,6 +430,12 @@ impl VM {
                     self.pop();
                 }
 
+                Opcode::Class => {
+                    let name = self.read_string();
+                    let class = ObjClass::new(name, self);
+                    self.push(class.into())
+                }
+
                 Opcode::Nil => self.push(Value::Nil),
                 Opcode::True => self.push(Value::from(true)),
                 Opcode::False => self.push(Value::from(false)),
@@ -413,13 +459,17 @@ impl VM {
         mut callee: Value,
         arg_count: usize,
     ) -> Result<(), InterpretError> {
-        if let Some(callee) = callee.as_a_mut() {
+        if let Some(callee) = callee.as_a_mut::<ObjClosure>() {
             self.call(callee, arg_count)
         } else if let Some(native) = callee.as_a_mut::<ObjNative>() {
             let result = { (native.function)(self) };
 
             self.stack_top -= arg_count + 1;
             self.push(result);
+            Ok(())
+        } else if let Some(class) = callee.as_a_mut::<ObjClass>() {
+            self.stack[self.stack_top - arg_count - 1] =
+                Value::from(ObjInstance::new(class, self));
             Ok(())
         } else {
             self.runtime_error("Can only call functions and classes.");
@@ -544,11 +594,10 @@ impl VM {
         self.function().chunk.constants[byte]
     }
 
-    fn read_string(&mut self) -> *const ObjString {
-        let val = self.read_constant();
-        let obj = val.as_obj();
-        let str = obj.as_a::<ObjString>().unwrap();
-        str as *const _
+    fn read_string(&mut self) -> *mut ObjString {
+        let mut val = self.read_constant();
+        let obj = val.as_obj_mut();
+        obj.as_a_mut().unwrap()
     }
 
     fn define_native(&mut self, name: &str, function: NativeFn) {
@@ -748,17 +797,16 @@ impl VM {
 
         match object.obj_type() {
             // Types with no references.
-            crate::object::ObjType::String | crate::object::ObjType::Native => {
-            }
+            ObjType::String | ObjType::Native => {}
 
-            crate::object::ObjType::Upvalue => {
+            ObjType::Upvalue => {
                 if let State::Closed(v) =
                     object.as_a_mut::<ObjUpvalue>().unwrap().state
                 {
                     self.mark_value(v);
                 }
             }
-            crate::object::ObjType::Function => {
+            ObjType::Function => {
                 let function = object.as_a_mut::<ObjFunction>().unwrap();
                 unsafe {
                     function
@@ -769,7 +817,7 @@ impl VM {
 
                 self.mark_slice(&mut function.chunk.constants);
             }
-            crate::object::ObjType::Closure => {
+            ObjType::Closure => {
                 let closure = object.as_a_mut::<ObjClosure>().unwrap();
                 self.mark_object(Obj::upcast_mut(closure.function_mut()));
                 for upvalue in closure.upvalues[0..closure.upvalue_count]
@@ -779,6 +827,17 @@ impl VM {
                     self.mark_object(Obj::upcast_mut(upvalue));
                 }
             }
+            ObjType::Class => {
+                let class = object.as_a_mut::<ObjClass>().unwrap();
+                let name = unsafe { class.name.as_mut().unwrap() };
+                self.mark_object(Obj::upcast_mut(name));
+            }
+            ObjType::Instance => unsafe {
+                let instance = object.as_a_mut::<ObjInstance>().unwrap();
+                let class = instance.class.as_mut().unwrap();
+                self.mark_object(Obj::upcast_mut(class));
+                self.mark_table(&mut instance.fields);
+            },
         }
     }
 

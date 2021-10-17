@@ -242,7 +242,9 @@ impl<'input, 'heap> Context<'input, 'heap> {
 // parse/visit methods
 impl<'input, 'heap> Context<'input, 'heap> {
     fn declaration(&mut self) {
-        if self.matches(Kind::Fun) {
+        if self.matches(Kind::Class) {
+            self.class_declaration();
+        } else if self.matches(Kind::Fun) {
             self.fun_declaration();
         } else if self.matches(Kind::Var) {
             self.var_declaration();
@@ -312,6 +314,20 @@ impl<'input, 'heap> Context<'input, 'heap> {
             self.emit_byte(upvalue.is_local as u8);
             self.emit_byte(upvalue.index);
         }
+    }
+
+    fn class_declaration(&mut self) {
+        self.parser.consume(Kind::Identifier, "Expect class name.");
+        let name_constant = self.identifier_constant(self.parser.previous);
+        self.declare_variable();
+
+        self.emit_bytes(Opcode::Class, name_constant);
+        self.define_variable(name_constant);
+
+        self.parser
+            .consume(Kind::LeftBrace, "Expect '{' before class body.");
+        self.parser
+            .consume(Kind::RightBrace, "Expect '}' after class body.");
     }
 
     fn parse_variable(&mut self, error_message: &'static str) -> u8 {
@@ -688,6 +704,19 @@ impl<'input, 'heap> Context<'input, 'heap> {
         let argument_count = self.argument_list();
 
         self.emit_bytes(Opcode::Call, argument_count);
+    }
+
+    pub fn dot(&mut self, can_assign: bool) {
+        self.parser
+            .consume(Kind::Identifier, "Expect property name after '.'.");
+        let name = self.identifier_constant(self.parser.previous);
+
+        if can_assign && self.matches(Kind::Equal) {
+            self.expression();
+            self.emit_bytes(Opcode::SetProperty, name);
+        } else {
+            self.emit_bytes(Opcode::GetProperty, name);
+        }
     }
 
     fn argument_list(&mut self) -> u8 {

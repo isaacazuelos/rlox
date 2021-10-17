@@ -1,9 +1,9 @@
-// #![allow(dead_code)]
-
 mod chunk;
+mod class;
 mod closure;
 mod compiler;
 mod function;
+mod instance;
 mod native;
 mod object;
 mod parser;

@@ -159,7 +159,7 @@ impl<'a, 'i, 'h> Rule<'a, 'i, 'h> {
                 Rule(N,             N,            None),       // LeftBrace,
                 Rule(N,             N,            None),       // RightBrace,
                 Rule(N,             N,            None),       // Comma,
-                Rule(N,             N,            None),       // Dot,
+                Rule(N,             S(C::dot),    Call),       // Dot,
                 Rule(S(C::unary),   S(C::binary), Term),       // Minus,
                 Rule(N,             S(C::binary), Term),       // Plus,
                 Rule(N,             N,            None),       // Semicolon,
