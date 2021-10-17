@@ -12,7 +12,7 @@ use crate::{
     closure::ObjClosure,
     compiler::compile,
     function::ObjFunction,
-    instance::ObjInstance,
+    instance::{ObjBoundMethod, ObjInstance},
     native::{native_clock, NativeFn, ObjNative},
     object::{Obj, ObjType, Object},
     string::ObjString,
@@ -116,6 +116,7 @@ pub struct VM {
 
     // heap
     bytes_allocated: usize,
+    init_string: *mut ObjString,
     next_gc: usize,
     pause_gc: bool,
     objects: *mut Obj,
@@ -125,8 +126,9 @@ pub struct VM {
 
 impl Drop for VM {
     fn drop(&mut self) {
-        let mut cursor = self.objects;
         self.objects = null_mut();
+        self.init_string = null_mut();
+        let mut cursor = self.objects;
 
         while !cursor.is_null() {
             cursor = unsafe {
@@ -152,14 +154,17 @@ impl VM {
             open_upvalues: Vec::new(),
             bytes_allocated: 0,
             next_gc: 1024 * 1024,
-            pause_gc: false,
+            pause_gc: true, // gc paused until setup is complete.
             objects: null_mut(),
             strings: HashMap::new(),
             gray_stack: Vec::new(),
+            init_string: null_mut(),
         };
 
         vm.define_native("clock", native_clock);
+        vm.init_string = ObjString::copy("init", &mut vm);
 
+        vm.pause_gc = false;
         vm
     }
 
@@ -216,9 +221,10 @@ impl VM {
                 .map(Opcode::to_str)
                 .unwrap_or("<invalid>");
                 println!(
-                    "ip {:4} {:<16} stack: {:?}",
+                    "ip {:4} {:<16} bp: {}, stack: {:?}",
                     ip,
                     op,
+                    self.frame().bp,
                     &self.stack[0..self.stack_top],
                 );
             }
@@ -246,7 +252,7 @@ impl VM {
                         return Ok(());
                     }
 
-                    self.stack_top = previous_bp - 1;
+                    self.stack_top = previous_bp;
                     self.push(result);
                 }
 
@@ -335,25 +341,23 @@ impl VM {
                 }
 
                 Opcode::GetProperty => {
-                    if let Some(instance) =
-                        self.peek(0).as_a_mut::<ObjInstance>()
-                    {
-                        let name = self.read_string();
-
-                        if let Some(value) = instance.fields.get(name) {
-                            self.pop(); // instance;
-                            self.push(value);
-                        } else {
-                            self.runtime_error(format!(
-                                "Undefined property '{}'.",
-                                unsafe { name.as_ref().unwrap().as_str() },
-                            ));
-                            return Err(InterpretError::Runtime);
-                        }
-                    } else {
+                    if !self.peek(0).is_a::<ObjInstance>() {
                         self.runtime_error("Only instances have properties.");
                         return Err(InterpretError::Runtime);
                     }
+
+                    let mut instance_value = self.peek(0);
+                    let instance =
+                        instance_value.as_a_mut::<ObjInstance>().unwrap();
+                    let name = self.read_string();
+
+                    if let Some(value) = instance.fields.get(name) {
+                        self.pop();
+                        self.push(value);
+                        continue;
+                    }
+
+                    self.bind_method(instance.class, name)?;
                 }
 
                 Opcode::SetProperty => {
@@ -436,6 +440,18 @@ impl VM {
                     self.push(class.into())
                 }
 
+                Opcode::Method => {
+                    let name = self.read_string();
+                    self.define_method(name);
+                }
+
+                Opcode::Invoke => {
+                    let method = self.read_string();
+                    let arg_count = self.read_byte() as usize;
+
+                    self.invoke(method, arg_count)?;
+                }
+
                 Opcode::Nil => self.push(Value::Nil),
                 Opcode::True => self.push(Value::from(true)),
                 Opcode::False => self.push(Value::from(false)),
@@ -462,7 +478,7 @@ impl VM {
         if let Some(callee) = callee.as_a_mut::<ObjClosure>() {
             self.call(callee, arg_count)
         } else if let Some(native) = callee.as_a_mut::<ObjNative>() {
-            let result = { (native.function)(self) };
+            let result = (native.function)(self);
 
             self.stack_top -= arg_count + 1;
             self.push(result);
@@ -470,7 +486,25 @@ impl VM {
         } else if let Some(class) = callee.as_a_mut::<ObjClass>() {
             self.stack[self.stack_top - arg_count - 1] =
                 Value::from(ObjInstance::new(class, self));
-            Ok(())
+
+            if let Some(mut initializer_value) =
+                class.methods.get(self.init_string)
+            {
+                let initializer =
+                    initializer_value.as_a_mut::<ObjClosure>().unwrap();
+                self.call(initializer, arg_count)
+            } else if arg_count != 0 {
+                self.runtime_error(format!(
+                    "Expected 0 arguments but got {}.",
+                    arg_count
+                ));
+                Err(InterpretError::Runtime)
+            } else {
+                Ok(())
+            }
+        } else if let Some(bound) = callee.as_a_mut::<ObjBoundMethod>() {
+            self.stack[self.stack_top - arg_count - 1] = bound.receiver;
+            self.call(bound.method, arg_count)
         } else {
             self.runtime_error("Can only call functions and classes.");
             Err(InterpretError::Runtime)
@@ -502,13 +536,50 @@ impl VM {
         let frame = CallFrame {
             closure,
             ip: 0,
-            bp: self.stack_top - arg_count,
+            bp: self.stack_top - arg_count - 1,
         };
 
         self.frames[self.frame_count] = frame;
         self.frame_count += 1;
 
         Ok(())
+    }
+
+    fn invoke(
+        &mut self,
+        name: *mut ObjString,
+        arg_count: usize,
+    ) -> Result<(), InterpretError> {
+        let mut receiver = self.peek(arg_count);
+
+        if let Some(instance) = receiver.as_a_mut::<ObjInstance>() {
+            if let Some(value) = instance.fields.get(name) {
+                self.stack[self.stack_top - arg_count - 1] = value;
+                return self.call_value(value, arg_count);
+            }
+
+            let class = unsafe { instance.class.as_mut().unwrap() };
+            self.invoke_from_class(class, name, arg_count)
+        } else {
+            self.runtime_error("Only instances have methods.");
+            Err(InterpretError::Runtime)
+        }
+    }
+
+    fn invoke_from_class(
+        &mut self,
+        class: &mut ObjClass,
+        name: *mut ObjString,
+        arg_count: usize,
+    ) -> Result<(), InterpretError> {
+        if let Some(mut method_value) = class.methods.get(name) {
+            let method = method_value.as_a_mut::<ObjClosure>().unwrap();
+            self.call(method, arg_count)
+        } else {
+            let name = unsafe { name.as_ref().unwrap().as_str() };
+            self.runtime_error(format!("Undefined property '{}'.", name));
+            Err(InterpretError::Runtime)
+        }
     }
 
     fn capture_upvalue(&mut self, local: *mut Value) -> *mut ObjUpvalue {
@@ -554,6 +625,33 @@ impl VM {
                 break;
             }
         }
+    }
+
+    fn bind_method(
+        &mut self,
+        class: *mut ObjClass,
+        name: *mut ObjString,
+    ) -> Result<(), InterpretError> {
+        let class = unsafe { class.as_mut().unwrap() };
+        if let Some(mut method_value) = class.methods.get(name) {
+            let method = method_value.as_a_mut().unwrap();
+            let bound = ObjBoundMethod::new(self.peek(0), method, self);
+            self.pop();
+            self.push(Value::from(bound));
+            Ok(())
+        } else {
+            let name = unsafe { name.as_ref().unwrap() }.as_str();
+            self.runtime_error(format!("Undefined property '{}'.", name));
+            Err(InterpretError::Runtime)
+        }
+    }
+
+    fn define_method(&mut self, name: *mut ObjString) {
+        let method = self.peek(0);
+        let mut class_value = self.peek(1);
+        let class = class_value.as_a_mut::<ObjClass>().unwrap();
+        class.methods.set(name, method);
+        self.pop();
     }
 
     fn frame(&self) -> &CallFrame {
@@ -731,6 +829,8 @@ impl VM {
         //
         // self.mark_compiler_roots();
 
+        let init_string = unsafe { self.init_string.as_mut().unwrap() };
+        self.mark_object(Obj::upcast_mut(init_string));
         self.mark_global_table();
     }
 }
@@ -831,12 +931,19 @@ impl VM {
                 let class = object.as_a_mut::<ObjClass>().unwrap();
                 let name = unsafe { class.name.as_mut().unwrap() };
                 self.mark_object(Obj::upcast_mut(name));
+                self.mark_table(&mut class.methods);
             }
             ObjType::Instance => unsafe {
                 let instance = object.as_a_mut::<ObjInstance>().unwrap();
                 let class = instance.class.as_mut().unwrap();
                 self.mark_object(Obj::upcast_mut(class));
                 self.mark_table(&mut instance.fields);
+            },
+            ObjType::BoundMethod => unsafe {
+                let bound = object.as_a_mut::<ObjBoundMethod>().unwrap();
+                self.mark_value(bound.receiver);
+                let method = bound.method.as_mut().unwrap();
+                self.mark_object(Obj::upcast_mut(method));
             },
         }
     }

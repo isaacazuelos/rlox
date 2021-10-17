@@ -194,7 +194,7 @@ impl<'a, 'i, 'h> Rule<'a, 'i, 'h> {
                 Rule(N,             N, None), // Print,
                 Rule(N,             N, None), // Return,
                 Rule(N,             N, None), // Super,
-                Rule(N,             N, None), // This,
+                Rule(S(C::this),    N, None), // This,
                 Rule(S(C::literal), N, None), // True,
                 Rule(N,             N, None), // Var,
                 Rule(N,             N, None), // While,

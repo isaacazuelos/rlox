@@ -30,6 +30,7 @@ pub struct Context<'input, 'heap> {
     parser: &'input mut Parser<'input>,
     heap: &'heap mut VM,
 
+    classes: Vec<ClassCompiler>,
     compilers: Vec<Compiler<'input>>,
 }
 
@@ -38,12 +39,14 @@ impl<'input, 'heap> Context<'input, 'heap> {
         Context {
             parser,
             heap,
+            classes: Vec::new(),
             compilers: Vec::new(),
         }
     }
 
     fn compile_top_level(&mut self) -> *mut ObjFunction {
-        let top_level = Compiler::new_top_level(&mut self.heap);
+        let top_level =
+            Compiler::new("script", FunctionKind::Script, &mut self.heap);
         self.compilers.push(top_level);
 
         while !self.matches(Kind::Eof) {
@@ -131,7 +134,11 @@ impl<'input, 'heap> Context<'input, 'heap> {
     }
 
     fn emit_return(&mut self) {
-        self.emit_byte(Opcode::Nil);
+        if self.current().kind == FunctionKind::Initializer {
+            self.emit_bytes(Opcode::GetLocal, 0);
+        } else {
+            self.emit_byte(Opcode::Nil);
+        }
         self.emit_byte(Opcode::Return);
     }
 
@@ -260,13 +267,13 @@ impl<'input, 'heap> Context<'input, 'heap> {
     fn fun_declaration(&mut self) {
         let global = self.parse_variable("Expect function name.");
         self.current_mut().mark_initialized();
-        self.function();
+        self.function(FunctionKind::Function);
         self.define_variable(global);
     }
 
-    fn function(&mut self) {
+    fn function(&mut self, kind: FunctionKind) {
         let name = self.parser.previous.lexeme;
-        let compiler = Compiler::new(name, &mut self.heap);
+        let compiler = Compiler::new(name, kind, &mut self.heap);
         self.compilers.push(compiler);
 
         self.begin_scope();
@@ -316,18 +323,43 @@ impl<'input, 'heap> Context<'input, 'heap> {
         }
     }
 
+    fn method(&mut self) {
+        self.parser.consume(Kind::Identifier, "Expect method name.");
+        let constant = self.identifier_constant(self.parser.previous);
+
+        let kind = if self.parser.previous.lexeme == "init" {
+            FunctionKind::Initializer
+        } else {
+            FunctionKind::Method
+        };
+
+        self.function(kind);
+        self.emit_bytes(Opcode::Method, constant);
+    }
+
     fn class_declaration(&mut self) {
         self.parser.consume(Kind::Identifier, "Expect class name.");
+        let class_name = self.parser.previous;
         let name_constant = self.identifier_constant(self.parser.previous);
         self.declare_variable();
 
         self.emit_bytes(Opcode::Class, name_constant);
         self.define_variable(name_constant);
 
+        self.classes.push(ClassCompiler::new());
+
+        self.named_variable(class_name, false);
         self.parser
             .consume(Kind::LeftBrace, "Expect '{' before class body.");
+
+        while !self.check(Kind::RightBrace) && !self.check(Kind::Eof) {
+            self.method();
+        }
+
         self.parser
             .consume(Kind::RightBrace, "Expect '}' after class body.");
+        self.emit_byte(Opcode::Pop);
+        self.classes.pop();
     }
 
     fn parse_variable(&mut self, error_message: &'static str) -> u8 {
@@ -377,7 +409,7 @@ impl<'input, 'heap> Context<'input, 'heap> {
     }
 
     fn add_local(&mut self, name: Token<'input>) {
-        if self.current().local_count == u8::MAX as usize {
+        if self.current().local_count == Local::MAX_LOCALS {
             self.parser.error("Too many local variables in function.");
             return;
         }
@@ -605,6 +637,11 @@ impl<'input, 'heap> Context<'input, 'heap> {
         if self.matches(Kind::Semicolon) {
             self.emit_return();
         } else {
+            if self.current().kind == FunctionKind::Initializer {
+                self.parser
+                    .error("Can't return a value from an initializer.");
+            }
+
             self.expression();
             self.parser
                 .consume(Kind::Semicolon, "Expect ';' after return value.");
@@ -664,6 +701,15 @@ impl<'input, 'heap> Context<'input, 'heap> {
         self.named_variable(self.parser.previous, can_assign);
     }
 
+    pub fn this(&mut self, _can_assign: bool) {
+        if self.classes.is_empty() {
+            self.parser.error("Can't use 'this' outside of a class.");
+            return;
+        }
+
+        self.variable(false);
+    }
+
     fn named_variable(&mut self, name: Token, can_assign: bool) {
         let current = self.compilers.len() - 1;
 
@@ -714,6 +760,10 @@ impl<'input, 'heap> Context<'input, 'heap> {
         if can_assign && self.matches(Kind::Equal) {
             self.expression();
             self.emit_bytes(Opcode::SetProperty, name);
+        } else if self.matches(Kind::LeftParen) {
+            let arg_count = self.argument_list();
+            self.emit_bytes(Opcode::Invoke, name);
+            self.emit_byte(arg_count);
         } else {
             self.emit_bytes(Opcode::GetProperty, name);
         }
@@ -791,17 +841,31 @@ pub struct Compiler<'input> {
 }
 
 impl<'input> Compiler<'input> {
-    fn new_top_level(heap: &mut VM) -> Self {
+    fn new(name: &str, kind: FunctionKind, heap: &mut VM) -> Self {
         let function = ObjFunction::new(heap);
 
-        Compiler {
-            kind: FunctionKind::Script,
+        unsafe { (*function).name = ObjString::copy(name, heap) };
+
+        let mut compiler = Compiler {
             function,
-            locals: [Local::RETURN_PLACEHOLDER; Local::MAX_LOCALS],
+            kind,
+            locals: [Local::PLACEHOLDER; Local::MAX_LOCALS],
             local_count: 0,
             up_values: [Upvalue::UNINIT; ObjClosure::MAX_UPVALUES],
             scope_depth: 0,
-        }
+        };
+
+        let local = &mut compiler.locals[0];
+        compiler.local_count += 1;
+        local.depth = 0;
+        local.is_captured = false;
+        local.name.lexeme = if kind != FunctionKind::Function {
+            "this"
+        } else {
+            ""
+        };
+
+        compiler
     }
 
     fn function(&self) -> &ObjFunction {
@@ -810,20 +874,6 @@ impl<'input> Compiler<'input> {
 
     fn function_mut(&mut self) -> &mut ObjFunction {
         unsafe { (*self).function.as_mut().unwrap() }
-    }
-
-    fn new(name: &str, heap: &mut VM) -> Self {
-        let function = ObjFunction::new(heap);
-        unsafe { (*function).name = ObjString::copy(name, heap) };
-
-        Compiler {
-            function,
-            kind: FunctionKind::Function,
-            locals: [Local::RETURN_PLACEHOLDER; Local::MAX_LOCALS],
-            local_count: 0,
-            up_values: [Upvalue::UNINIT; ObjClosure::MAX_UPVALUES],
-            scope_depth: 0,
-        }
     }
 
     fn mark_initialized(&mut self) {
@@ -843,13 +893,13 @@ struct Local<'a> {
 }
 
 impl Local<'_> {
-    const RETURN_PLACEHOLDER: Local<'static> = Local {
+    const PLACEHOLDER: Local<'static> = Local {
         name: Token::fake(),
         depth: Local::ERROR_DEPTH,
         is_captured: false,
     };
 
-    const MAX_LOCALS: usize = u8::MAX as usize;
+    const MAX_LOCALS: usize = u8::MAX as usize + 1;
     const ERROR_DEPTH: isize = -1;
 }
 
@@ -864,4 +914,12 @@ impl Upvalue {
         is_local: true,
         index: 0,
     };
+}
+
+struct ClassCompiler;
+
+impl ClassCompiler {
+    fn new() -> ClassCompiler {
+        ClassCompiler
+    }
 }

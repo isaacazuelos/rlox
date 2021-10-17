@@ -53,20 +53,10 @@ impl PartialEq for Value {
             (Nil, Nil) => true,
             (Boolean(l0), Boolean(r0)) => l0 == r0,
             (Number(l0), Number(r0)) => l0 == r0,
-            (Obj(lhs), Obj(rhs)) => {
+            (Obj(_), Obj(_)) => {
                 let l = self.as_obj();
                 let r = other.as_obj();
-                match (l.obj_type(), r.obj_type()) {
-                    (ObjType::String, ObjType::String) => {
-                        let l = l.as_a::<ObjString>().unwrap();
-                        let r = r.as_a::<ObjString>().unwrap();
-                        l.as_str() == r.as_str()
-                    }
-                    (ObjType::Closure, ObjType::Closure) => {
-                        std::ptr::eq(*lhs, *rhs)
-                    }
-                    (_, _) => false,
-                }
+                l == r
             }
             _ => false,
         }
@@ -214,6 +204,10 @@ impl Value {
             Value::Obj(o) => unsafe { &mut **o },
             _ => panic!("cannot cast {:?} as Number", self),
         }
+    }
+
+    pub fn is_a<T: Object>(&self) -> bool {
+        self.as_a::<T>().is_some()
     }
 
     pub fn as_a<T: Object>(&self) -> Option<&T> {

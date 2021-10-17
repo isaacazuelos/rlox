@@ -1,20 +1,25 @@
 use std::fmt::{self, Display, Formatter};
 
 use crate::{
-    class::ObjClass, closure::ObjClosure, function::ObjFunction,
-    instance::ObjInstance, native::ObjNative, string::ObjString,
+    class::ObjClass,
+    closure::ObjClosure,
+    function::ObjFunction,
+    instance::{ObjBoundMethod, ObjInstance},
+    native::ObjNative,
+    string::ObjString,
     upvalue::ObjUpvalue,
 };
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum ObjType {
-    String,
-    Function,
-    Native,
-    Closure,
-    Upvalue,
+    BoundMethod,
     Class,
+    Closure,
+    Function,
     Instance,
+    Native,
+    String,
+    Upvalue,
 }
 
 #[derive(Debug)]
@@ -69,6 +74,10 @@ impl Obj {
                 let instance = object as *mut ObjInstance;
                 drop(Box::from_raw(instance))
             }
+            ObjType::BoundMethod => {
+                let bm = object as *mut ObjBoundMethod;
+                drop(Box::from_raw(bm))
+            }
         }
     }
 
@@ -121,6 +130,12 @@ impl Display for Obj {
                 let name = class.name.as_ref().unwrap().as_str();
                 write!(f, "{} instance", name)
             },
+            ObjType::BoundMethod => unsafe {
+                let outer: &ObjBoundMethod = std::mem::transmute(self);
+                let method: &ObjClosure = outer.method.as_mut().unwrap();
+                let function: &ObjFunction = method.function();
+                write!(f, "{:?}", function)
+            },
         }
     }
 }
@@ -141,10 +156,12 @@ impl PartialEq for Obj {
                 let r: &ObjUpvalue = std::mem::transmute(other);
                 l.get() == r.get()
             },
+
             ObjType::Closure
             | ObjType::Function
             | ObjType::Instance // good enough for now, I think.
             | ObjType::Native
+            | ObjType::BoundMethod
             | ObjType::Class => std::ptr::eq(self, other),
         }
     }

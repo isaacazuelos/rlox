@@ -38,6 +38,8 @@ pub enum Opcode {
     Class,
     GetProperty,
     SetProperty,
+    Method,
+    Invoke,
 }
 
 impl Opcode {
@@ -75,6 +77,8 @@ impl Opcode {
             Opcode::Class => "Class",
             Opcode::GetProperty => "GetProperty",
             Opcode::SetProperty => "SetProperty",
+            Opcode::Method => "Method",
+            Opcode::Invoke => "Invoke",
         }
     }
 }
@@ -122,6 +126,8 @@ impl TryFrom<u8> for Opcode {
             29 => Ok(Opcode::Class),
             30 => Ok(Opcode::GetProperty),
             31 => Ok(Opcode::SetProperty),
+            32 => Ok(Opcode::Method),
+            33 => Ok(Opcode::Invoke),
             n => Err(n),
         }
     }
@@ -184,7 +190,8 @@ impl Chunk {
                 | Opcode::DefineGlobal
                 | Opcode::GetGlobal
                 | Opcode::SetGlobal
-                | Opcode::Class),
+                | Opcode::Class
+                | Opcode::Method),
             ) => self.constant_instruction(op, offset),
             Ok(
                 op
@@ -227,6 +234,7 @@ impl Chunk {
 
                 offset + 4
             }
+            Ok(op @ Opcode::Invoke) => self.invoke_instruction(op, offset),
             Ok(op) => self.simple_instruction(op, offset),
             Err(n) => {
                 println!("Unknown opcode {}", n);
@@ -274,6 +282,19 @@ impl Chunk {
             op.to_str(),
             offset,
             (offset as isize + 3) + (sign * jump as isize)
+        );
+        offset + 3
+    }
+
+    fn invoke_instruction(&self, op: Opcode, offset: usize) -> usize {
+        let constant = self.code[offset + 1];
+        let arg_count = self.code[offset + 2];
+        println!(
+            "{:<16} ({} args) {:4} '{}'",
+            op.to_str(),
+            arg_count,
+            constant,
+            self.constants[constant as usize]
         );
         offset + 3
     }

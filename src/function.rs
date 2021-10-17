@@ -10,9 +10,12 @@ use crate::{
     vm::VM,
 };
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum FunctionKind {
     Function,
     Script,
+    Method,
+    Initializer,
 }
 
 #[repr(C, align(16))]
@@ -32,7 +35,7 @@ impl std::fmt::Debug for ObjFunction {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self.name() {
             Some(name) => write!(f, "<fn {}>", name),
-            None => write!(f, "<script>"),
+            None => write!(f, "<fn>"),
         }
     }
 }
