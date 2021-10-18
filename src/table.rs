@@ -25,6 +25,10 @@ impl Table {
         value
     }
 
+    pub fn add_all(&mut self, other: &Table) {
+        self.entries.extend(other.entries.iter());
+    }
+
     pub fn delete(&mut self, key: *const ObjString) -> bool {
         self.entries.remove(&hash(key)).is_some()
     }

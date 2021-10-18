@@ -92,6 +92,14 @@ impl<'input, 'heap> Context<'input, 'heap> {
         &self.get_function().chunk
     }
 
+    fn synthetic(&self, lexeme: &'static str) -> Token<'input> {
+        let mut token = self.parser.previous;
+
+        token.lexeme = lexeme;
+
+        token
+    }
+
     fn end_compiler(&mut self) -> Compiler<'input> {
         self.emit_return();
 
@@ -348,6 +356,25 @@ impl<'input, 'heap> Context<'input, 'heap> {
 
         self.classes.push(ClassCompiler::new());
 
+        if self.matches(Kind::Less) {
+            self.parser
+                .consume(Kind::Identifier, "Expect superclass name.");
+
+            self.variable(false);
+
+            if class_name.lexeme == self.parser.previous.lexeme {
+                self.parser.error("A class can't inherit from itself.");
+            }
+
+            self.begin_scope();
+            self.add_local(self.synthetic("super"));
+            self.define_variable(0);
+
+            self.named_variable(class_name, false);
+            self.emit_byte(Opcode::Inherit);
+            self.classes.last_mut().unwrap().has_superclass = true;
+        }
+
         self.named_variable(class_name, false);
         self.parser
             .consume(Kind::LeftBrace, "Expect '{' before class body.");
@@ -359,6 +386,11 @@ impl<'input, 'heap> Context<'input, 'heap> {
         self.parser
             .consume(Kind::RightBrace, "Expect '}' after class body.");
         self.emit_byte(Opcode::Pop);
+
+        if self.classes.last().unwrap().has_superclass {
+            self.end_scope();
+        }
+
         self.classes.pop();
     }
 
@@ -710,6 +742,33 @@ impl<'input, 'heap> Context<'input, 'heap> {
         self.variable(false);
     }
 
+    pub fn super_(&mut self, _can_assign: bool) {
+        if self.classes.is_empty() {
+            self.parser.error("Can't use 'super' outside of a class.");
+        } else if !self.classes.last().unwrap().has_superclass {
+            self.parser
+                .error("Can't use 'super' in a class with no superclass.");
+        }
+
+        self.parser.consume(Kind::Dot, "Expect '.' after 'super'.");
+        self.parser
+            .consume(Kind::Identifier, "Expect superclass method name.");
+
+        let name = self.identifier_constant(self.parser.previous);
+
+        self.named_variable(self.synthetic("this"), false);
+
+        if self.matches(Kind::LeftParen) {
+            let arg_count = self.argument_list();
+            self.named_variable(self.synthetic("super"), false);
+            self.emit_bytes(Opcode::SuperInvoke, name);
+            self.emit_byte(arg_count);
+        } else {
+            self.named_variable(self.synthetic("super"), false);
+            self.emit_bytes(Opcode::GetSuper, name);
+        }
+    }
+
     fn named_variable(&mut self, name: Token, can_assign: bool) {
         let current = self.compilers.len() - 1;
 
@@ -916,10 +975,14 @@ impl Upvalue {
     };
 }
 
-struct ClassCompiler;
+struct ClassCompiler {
+    has_superclass: bool,
+}
 
 impl ClassCompiler {
     fn new() -> ClassCompiler {
-        ClassCompiler
+        ClassCompiler {
+            has_superclass: false,
+        }
     }
 }

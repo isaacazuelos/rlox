@@ -40,6 +40,9 @@ pub enum Opcode {
     SetProperty,
     Method,
     Invoke,
+    Inherit,
+    GetSuper,
+    SuperInvoke,
 }
 
 impl Opcode {
@@ -79,6 +82,9 @@ impl Opcode {
             Opcode::SetProperty => "SetProperty",
             Opcode::Method => "Method",
             Opcode::Invoke => "Invoke",
+            Opcode::Inherit => "Inherit",
+            Opcode::GetSuper => "GetSuper",
+            Opcode::SuperInvoke => "SuperInvoke",
         }
     }
 }
@@ -128,6 +134,9 @@ impl TryFrom<u8> for Opcode {
             31 => Ok(Opcode::SetProperty),
             32 => Ok(Opcode::Method),
             33 => Ok(Opcode::Invoke),
+            34 => Ok(Opcode::Inherit),
+            35 => Ok(Opcode::GetSuper),
+            36 => Ok(Opcode::SuperInvoke),
             n => Err(n),
         }
     }
@@ -191,7 +200,8 @@ impl Chunk {
                 | Opcode::GetGlobal
                 | Opcode::SetGlobal
                 | Opcode::Class
-                | Opcode::Method),
+                | Opcode::Method
+                | Opcode::GetSuper),
             ) => self.constant_instruction(op, offset),
             Ok(
                 op
@@ -234,7 +244,9 @@ impl Chunk {
 
                 offset + 4
             }
-            Ok(op @ Opcode::Invoke) => self.invoke_instruction(op, offset),
+            Ok(op @ (Opcode::Invoke | Opcode::SuperInvoke)) => {
+                self.invoke_instruction(op, offset)
+            }
             Ok(op) => self.simple_instruction(op, offset),
             Err(n) => {
                 println!("Unknown opcode {}", n);

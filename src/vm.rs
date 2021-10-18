@@ -376,6 +376,14 @@ impl VM {
                     }
                 }
 
+                Opcode::GetSuper => {
+                    let name = self.read_string();
+                    let mut superclass_value = self.pop();
+                    let superclass = superclass_value.as_a_mut().unwrap();
+
+                    self.bind_method(superclass, name)?;
+                }
+
                 Opcode::JumpIfFalse => {
                     let offset = self.read_u16() as usize;
                     if self.peek(0).is_falsey() {
@@ -450,6 +458,36 @@ impl VM {
                     let arg_count = self.read_byte() as usize;
 
                     self.invoke(method, arg_count)?;
+                }
+
+                Opcode::SuperInvoke => {
+                    let method = self.read_string();
+                    let arg_count = self.read_byte() as usize;
+
+                    let mut superclass_value = self.pop();
+                    let superclass =
+                        superclass_value.as_a_mut::<ObjClass>().unwrap();
+
+                    self.invoke_from_class(superclass, method, arg_count)?;
+                }
+
+                Opcode::Inherit => {
+                    let superclass_value = self.peek(1);
+
+                    if let Some(superclass) =
+                        superclass_value.as_a::<ObjClass>()
+                    {
+                        let mut subclass_value = self.peek(0);
+                        let subclass =
+                            subclass_value.as_a_mut::<ObjClass>().unwrap();
+
+                        subclass.methods.add_all(&superclass.methods);
+
+                        self.pop();
+                    } else {
+                        self.runtime_error("Superclass must be a class.");
+                        return Err(InterpretError::Runtime);
+                    }
                 }
 
                 Opcode::Nil => self.push(Value::Nil),
